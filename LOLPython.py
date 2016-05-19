@@ -10,23 +10,40 @@
  Written by Andrew Dalke <dalke@dalkescientific.com>
  Dalke Scientific Software, LLC
  1 June 2007, Gothenburg, Sweden
- 
+
  This software is in the public domain.  For details see:
  http://creativecommons.org/licenses/publicdomain/
- 
+
 """
 
 
+import codecs
+import re
 import sys
 import keyword
 import os
 import types
-from cStringIO import StringIO
+from io import StringIO
 from ply import *
 
 
 __NAME__ = "lolpython"
 __VERSION__ = "1.0"
+
+# Required because Python 3
+# http://stackoverflow.com/a/24519338/4718769
+ESCAPE_SEQUENCE_RE = re.compile(r'''
+    ( \\U........      # 8-digit hex escapes
+    | \\u....          # 4-digit hex escapes
+    | \\x..            # 2-digit hex escapes
+    | \\[0-7]{1,3}     # Octal escapes
+    | \\N\{[^}]+\}     # Unicode characters by name
+    | \\[\\'"abfnrtv]  # Single-character escapes
+    )''', re.UNICODE | re.VERBOSE)
+def decode_escapes(s):
+    def decode_match(match):
+        return codecs.decode(match.group(0), 'unicode-escape')
+    return ESCAPE_SEQUENCE_RE.sub(decode_match, s)
 
 # Translating LOLPython tokens to Python tokens
 # This could be cleaned up.  For example, some of
@@ -37,6 +54,7 @@ tokens = (
     "RESERVED",  # Used for Python reserved names
     "NUMBER",    # Integers and floats
     "STRING",
+    "BSTRING",
     "OP",        # Like the Python OP
     "CLOSE",     # Don't really need this..
 
@@ -44,7 +62,6 @@ tokens = (
     "AUTOCALL",  # write t.value then add '('
     "INLINE",    # write t.value directly
     "FUTURE",    # for the "I FUTURE CAT WITH" statement
-    "PRINT",     # VISIBLE -> stdout or COMPLAIN -> stderr
 
     "ENDMARKER",
     "COLON",
@@ -89,13 +106,25 @@ def t_ASSIGN(t):  # cannot be a simple pattern because it must
 def t_SINGLE_QUOTE_STRING(t):
     r"'([^\\']+|\\'|\\\\)*'"  # I think this is right ...
     t.type = "STRING"
-    t.value = t.value[1:-1].decode("string-escape")
+    t.value = decode_escapes(t.value[1:-1])
     return t
 
 def t_DOUBLE_QUOTE_STRING(t):
     r'"([^\\"]+|\\"|\\\\)*"'
     t.type = "STRING"
-    t.value = t.value[1:-1].decode("string-escape")
+    t.value = decode_escapes(t.value[1:-1])
+    return t
+
+def t_SINGLE_QUOTE_BSTRING(t):
+    r"b'([^\\']+|\\'|\\\\)*'"
+    t.type = "BSTRING"
+    t.value = decode_escapes(t.value[2:-1])
+    return t
+
+def t_DOUBLE_QUOTE_BSTRING(t):
+    r'b"([^\\"]+|\\"|\\\\)*"'
+    t.type = "BSTRING"
+    t.value = decode_escapes(t.value[2:-1])
     return t
 
 # and LOL quoted strings!  They end with /LOL
@@ -169,6 +198,10 @@ def t_RETURN(t):
     r"U[ ]+TAKE\b"
     return RESERVED(t, "return")
 
+def t_yield_from(t):
+    r"U[ ]+BORROW[ ]+FROM\b"
+    return RESERVED(t, "yield from")
+
 def t_yield(t):
     r"U[ ]+BORROW\b"
     return RESERVED(t, "yield")
@@ -212,14 +245,34 @@ def t_MINUS_EQUAL(t):
 def t_DIV(t):
     r"SMASHES[ ]+INTO\b"
     return OP(t, "/")
-    
+
 def t_DIV_EQUAL(t):
-    r"SMASHES[ ]+INTO[ ]+HAS\b"
+    r"SMASHES[ ]+(?:HIM|HER|IT)SELF[ ]+INTO[ ]\b"
     return OP(t, "/=")
-    
+
+def t_MOD(t):
+    r"LEFTOVERS[ ]+AFTER[ ]+SMASHING[ ]+INTO\b"
+    return OP(t, "%")
+
+def t_MOD_EQUAL(t):
+    r"IZ[ ]+LEFTOVERS[ ]+AFTER[ ]+SMASHING[ ]+(?:HIM|HER|IT)SELF[ ]+INTO[ ]\b"
+    return OP(t, "%=")
+
 def t_TRUEDIV(t):
     r"SMASHES[ ]+NICELY[ ]+INTO\b"
     return OP(t, "//")
+
+def t_TRUEDIV_EQUAL(t):
+    r"SMASHES[ ]+(?:HIM|HER|IT)SELF[ ]+NICELY[ ]+INTO[ ]\b"
+    return OP(t, "//=")
+
+def t_MATMUL(t):
+    r"OF[ ]+THOSE[ ]+SWIRLY\b"
+    return OP(t, "@")
+
+def t_MATMUL_EQUAL(t):
+    r"COPIES[ ]+(?:HIM|HER|IT)SELF[ ]+BY[ ]+SWIRLY\b"
+    return OP(t, "@=")
 
 def t_MUL(t):
     r"OF[ ]THOSE\b"
@@ -232,6 +285,50 @@ def t_MUL_EQUAL(t):
 def t_POW(t):
     r"BY[ ]+GRAYSKULL[ ]+POWER"
     return OP(t, "**")
+
+def t_POW_EQUAL(t):
+    r"USES[ ]+GRAYSKULL[ ]+POWER"
+    return OP(t, "**=")
+
+def t_LSHIFT(t):
+    r"DANCE[ ]+LEFT[ ]+BY\b"
+    return OP(t, "<<")
+
+def t_LSHIFT_EQUAL(t):
+    r"DANCES[ ]+LEFT[ ]+BY\b"
+    return OP(t, "<<=")
+
+def t_RSHIFT(t):
+    r"DANCE[ ]+RIGHT[ ]+BY\b"
+    return OP(t, ">>")
+
+def t_RSHIFT_EQUAL(t):
+    r"DANCES[ ]+RIGHT[ ]+BY\b"
+    return OP(t, ">>=")
+
+def t_BITAND(t):
+    r"BOTH[ ]+WITH\b"
+    return OP(t, "&")
+
+def t_BITAND_EQUAL(t):
+    r"BECOMES[ ]+BOTH[ ]+WITH\b"
+    return OP(t, "&=")
+
+def t_BITOR(t):
+    r"EITHER[ ]+WITH\b"
+    return OP(t, "|")
+
+def t_BITOR_EQUAL(t):
+    r"BECOMES[ ]+EITHER[ ]+WITH\b"
+    return OP(t, "|=")
+
+def t_BITXOR(t):
+    r"THARCANONLYBEONE[ ]+WITH\b"
+    return OP(t, "^")
+
+def t_BITXOR_EQUAL(t):
+    r"BECOMES[ ]+THARCANONLYBEONE[ ]+WITH\b"
+    return OP(t, "^=")
 
 def t_IN(t):
     r"IN[ ]+(?:UR|THE|THIS)\b"
@@ -255,11 +352,15 @@ def t_pass(t):
 
 def t_forever(t):
     r"WHILE[ ]+I[ ]+CUTE\b"
-    return INLINE(t, "while 1")
+    return INLINE(t, "while True")
 
 def t_def(t):
     r"SO[ ]+IM[ ]+LIKE\b"
     return RESERVED(t, "def")
+
+def t_async_def(t):
+    r"SO[ ]+LATER[ ]+IM[ ]+LIKE\b"
+    return RESERVED(t, "async def")
 
 def t_class(t):
     r"ME[ ]+MAKE[ ]\b"
@@ -281,6 +382,14 @@ def t_assert_not(t):
 def t_for(t):
     r"GIMME[ ]+EACH\b"
     return RESERVED(t, "for")
+
+def t_async_for(t):
+    r"LATER[ ]+GIMME[ ]+EACH[ ]\b"
+    return RESERVED(t, "async for")
+
+def t_async_with(t):
+    r"LATER[ ]+WIF\b"
+    return RESERVED(t, "async with")
 
 def t_list(t):
     r"ALL[ ]+OF\b"
@@ -309,15 +418,17 @@ RESERVED_VALUES = {
     "SEVN": ("NUMBER", "7"),
     "ATE": ("NUMBER", "8"),
     "NINE": ("NUMBER", "9"),
-    "MEH": ("NAME", "False"),
-    "YEAH": ("NAME", "True"),
-    "VISIBLE": ("PRINT", "stdout"),
-    "COMPLAIN": ("PRINT", "stderr"),
+    "MEH": ("RESERVED", "False"),
+    "YEAH": ("RESERVED", "True"),
+    "VISIBLE": ("AUTOCALL", "print"),
+    "COMPLAIN": ("AUTOCALL", "printerr"),
     "AND": ("OP", ","),
     "BLACKHOLE": ("RESERVED", "ZeroDivisionError"),
     "DONOTLIKE": ("AUTOCALL", "AssertionError"),
 
     "ANTI": ("OP", "-"),
+    "OPPOSIT": ("OP", "~"),
+
     "IZ": ("RESERVED", "if"),
     "GIMME": ("RESERVED", "import"),
     "LIKE": ("RESERVED", "as"),
@@ -328,7 +439,7 @@ RESERVED_VALUES = {
     "WHATEVER": ("RESERVED", "finally"),
     "KTHX": ("RESERVED", "continue"),
     "KTHXBYE": ("RESERVED", "break"),
-    
+
     "OVER": ("OP", "/"),
 
     "AINT": ("RESERVED", "not"),
@@ -345,11 +456,14 @@ RESERVED_VALUES = {
     "THING": ("INLINE", "()"),   # sometimes it's better in singular form
     "MY": ("INLINE", "self."),
     "MYSELF": ("INLINE", "(self)"),
+    "ME": ("INLINE", "self"),    # Sometimes needed for method declaration
 
     "EVEN": ("INLINE", "% 2 == 0"),
     "ODD": ("INLINE", "% 2 == 1"),
     "WIF": ("RESERVED", "with"),
-    "ITSLIKETHIS":("RESERVED","class")
+    "ITSLIKETHIS":("RESERVED","class"),
+
+    "WAITFORIT": ("RESERVED", "await"),
     }
 
 def t_FLOAT(t):
@@ -364,13 +478,16 @@ def t_INT(t):
     return t
 
 def t_INVISIBLE(t):
-    r"INVISIBLE([ ]+(LIST|STRING|BUCKET))?\b"
+    r"INVISIBLE([ ]+(LIST|STRING|BYTES|BUCKET))?\b"
     if "LIST" in t.value:
         t.type = "INLINE"
         t.value = "[]"
     elif "STRING" in t.value:
         t.type = "INLINE"
         t.value = '""'
+    elif "BYTES" in t.value:
+        t.type = "INLINE"
+        t.value = 'b""'
     elif "BUCKET" in t.value:
         t.type = "INLINE"
         t.value = "{}"
@@ -390,14 +507,14 @@ def t_NAME(t):
         t.type = type
         t.value = value
         if t.type == "AUTOCALL":
-            t.lexer.paren_stack.append(")")
+            t.lexer.paren_stack.append(')')
     return t
 
 def t_WS(t):
     r' [ ]+ '
     if t.lexer.at_line_start and not t.lexer.paren_stack:
         return t
-    
+
 
 # Don't generate newline tokens when inside of parens
 def t_newline(t):
@@ -406,11 +523,11 @@ def t_newline(t):
     t.type = "NEWLINE"
     if not t.lexer.paren_stack:
         return t
-    
+
 
 def t_error(t):
     raise SyntaxError("Unknown symbol %r" % (t.value[0],))
-    print "Skipping", repr(t.value[0])
+    print("Skipping " + repr(t.value[0]))
     t.lexer.skip(1)
 
 
@@ -439,7 +556,7 @@ MUST_INDENT = 2
 def track_tokens_filter(lexer, tokens):
     lexer.at_line_start = at_line_start = True
     indent = NO_INDENT
-    
+
     for token in tokens:
         token.at_line_start = at_line_start
 
@@ -447,7 +564,7 @@ def track_tokens_filter(lexer, tokens):
             at_line_start = False
             indent = MAY_INDENT
             token.must_indent = False
-            
+
         elif token.type == "NEWLINE":
             at_line_start = True
             if indent == MAY_INDENT:
@@ -501,13 +618,13 @@ def indentation_filter(tokens):
     prev_was_ws = False
     for token in tokens:
 ##        if 1:
-##            print "Process", token,
+##            print("Process " + str(token), end='')
 ##            if token.at_line_start:
-##                print "at_line_start",
+##                print(" at_line_start ", end='')
 ##            if token.must_indent:
-##                print "must_indent",
-##            print
-                
+##                print(" must_indent ", end='')
+##            print()
+
         # WS only occurs at the start of the line
         # There may be WS followed by NEWLINE so
         # only track the depth here.  Don't indent/dedent
@@ -570,7 +687,7 @@ def indentation_filter(tokens):
         assert token is not None
         for _ in range(1, len(levels)):
             yield DEDENT(token.lineno)
-    
+
 
 # The top-level filter adds an ENDMARKER, if requested.
 # Python's grammar uses it.
@@ -617,7 +734,7 @@ class IndentWriter(object):
 # Split things up because the from __future__ statements must
 # go before any other code.
 
-HEADER = """# LOLPython to Python converter version 1.0
+HEADER = """# Compiled by LOLPython to Python converter version 1.0
 # Written by Andrew Dalke, who should have been working on better things.
 
 """
@@ -625,13 +742,15 @@ HEADER = """# LOLPython to Python converter version 1.0
 BODY = """
 # sys is used for COMPLAIN and ARGZ
 import sys as _lol_sys
+# printerr is defined in order to let the COMPLAIN syntax work in Py3k
+printerr = lambda *args, **kwargs: print(*args, **kwargs, file=_lol_sys.stderr)
 
 """
 
 def to_python(s):
     L = LOLLexer()
     L.input(s)
-    
+
     header = StringIO()
     header.write(HEADER)
     header_output = IndentWriter(header)
@@ -645,7 +764,7 @@ def to_python(s):
 
     for t in iter(L.token_stream):
         if t.type == "NAME":
-            # Need to escape names which are Python variables Do that
+            # Need to escape names which are Python variables.  Do that
             # by appending an "_".  But then I also need to make sure
             # that "yield_" does not collide with "yield".  And you
             # thought you were being clever trying to use a Python
@@ -655,7 +774,7 @@ def to_python(s):
                 write(t.value + "_ ")
             else:
                 write(t.value + " ")
-            
+
         elif t.type in ("RESERVED", "OP", "NUMBER", "CLOSE"):
             # While not pretty, I'll put a space after each
             # term because it's the simplest solution.  Otherwise
@@ -666,7 +785,10 @@ def to_python(s):
             # XXX escape names which are special in Python!
         elif t.type == "STRING":
             write(repr(t.value) + " ")
-        
+
+        elif t.type == "BSTRING":
+            write("b" + repr(t.value) + " ")
+
         elif t.type == "COMMENT":
             # Not enough information to keep comments on the correct
             # indentation level.  This is good enough.  Ugly though.
@@ -680,46 +802,38 @@ def to_python(s):
         elif t.type == "INDENT":
             output.indent += 1
             pass
-            
+
         elif t.type == "DEDENT":
             output.indent -= 1
             pass
-            
+
         elif t.type == "NEWLINE":
             write(t.value)
             output.at_first_column = True
             output = body_output
             write = output.write
-            
-        elif t.type == "PRINT":
-            if t.value == "stdout":
-                write("print ")
-            elif t.value == "stderr":
-                write("print >>_lol_sys.stderr, ")
-            else:
-                raise AssertionError(t.value)
-                
+
         elif t.type == "AUTOCALL":
             write(t.value + "(")
-        
+
         elif t.type == "INLINE":
             write(t.value)
-        
+
         elif t.type == "ENDMARKER":
             write("\n# The end.\n")
-        
+
         elif t.type == "WS":
             output.leading_ws = t.value
-        
+
         elif t.type == "FUTURE":
             # Write to the header.  This is a hack.  Err, a hairball.
             output = header_output
             write = output.write
             write("from __future__ import ")
-            
+
         else:
             raise AssertionError(t.type)
-        
+
     return header.getvalue() + body.getvalue()
 
 
@@ -740,7 +854,7 @@ def execstring(s, module_name="__lolmain__"):
     # like __main__.  This fix is enough to fool unittest.
     m = types.ModuleType(module_name)
     sys.modules[module_name] = m
-    exec python_s in m.__dict__
+    exec(python_s, m.__dict__)
     return m
 
 def convert_file(infile, outfile):
@@ -759,16 +873,16 @@ def convert(filenames):
             convert_file(open(filename), open(base+".py", "w"))
 
 def help():
-    print """convert and run a lolpython program
+    print("""convert and run a lolpython program
 Commands are:
     lolpython              Read a lolpython program from stdin and execute it
-    lolpython --convert    Convert a lolpython program from stdin 
+    lolpython --convert    Convert a lolpython program from stdin
                                   and generate python to stdout
-    lolpython --convert filename1 [filename....] 
+    lolpython --convert filename1 [filename....]
                            Convert a list of lolpython files into Python files
     lolpython filename [arg1 [arg2 ...]]
                            Run a lolpython program using optional arguments
-"""
+""")
 
 def main(argv):
     if len(argv) >= 2:
@@ -779,7 +893,7 @@ def main(argv):
             help()
             return
         if argv[1] == "--version":
-            print __NAME__ + " " + __VERSION__
+            print(__NAME__ + " " + __VERSION__)
             return
 
         # otherwise, run the lolpython program
@@ -789,9 +903,8 @@ def main(argv):
     else:
         # commands from stdin
         execfile(sys.stdin)
-        
-    
+
+
 
 if __name__ == "__main__":
     main(sys.argv)
-    
